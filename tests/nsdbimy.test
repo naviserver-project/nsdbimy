@@ -1,0 +1,323 @@
+#
+# The contents of this file are subject to the Mozilla Public License
+# Version 1.1 (the "License"); you may not use this file except in
+# compliance with the License. You may obtain a copy of the License at
+# http://mozilla.org/
+#
+# Software distributed under the License is distributed on an "AS IS"
+# basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
+# the License for the specific language governing rights and limitations
+# under the License.
+#
+# Copyright (C) 2006 Stephen Deasey <sdeasey@gmail.com>
+#
+# Alternatively, the contents of this file may be used under the terms
+# of the GNU General Public License (the "GPL"), in which case the
+# provisions of GPL are applicable instead of those above.  If you wish
+# to allow use of your version of this file only under the terms of the
+# GPL and not to allow others to use your version of this file under the
+# License, indicate your decision by deleting the provisions above and
+# replace them with the notice and other provisions required by the GPL.
+# If you do not delete the provisions above, a recipient may use your
+# version of this file under either the License or the GPL.
+#
+
+#
+# Test the mysql driver for the dbi database interface.
+#
+
+
+package require tcltest 2.2
+namespace import -force ::tcltest::*
+
+eval ::tcltest::configure $argv
+
+
+
+if {[catch {
+
+	catch {dbi_dml {drop table test}}
+
+    dbi_dml {
+        create table test (
+            a integer,
+            b varchar(30)
+        ) engine=InnoDB;
+    }
+    dbi_dml {insert into test values (1, 'x')}
+    dbi_dml {insert into test values (2, 'y')}
+
+} err]} {
+    ns_log error $err
+    cleanupTests
+    return
+} else {
+    testConstraint table true
+}
+
+
+
+test rows-1 {0 rows} -constraints table -body {
+    dbi_rows {select b from test where a = 99}
+} -result {}
+
+test rows-2 {1 row} -constraints table -body {
+    dbi_rows {select b from test where a = 1}
+} -result x
+
+test rows-3 {1 row} -constraints table -body {
+    dbi_rows {select b from test where a = 2}
+} -result y
+
+test rows-4 {2 rows} -constraints table -body {
+    dbi_rows {select b from test order by a}
+} -result {x y}
+
+test rows-5 {2 cols, 2 rows} -constraints table -body {
+    dbi_rows {select a, b from test order by a}
+} -result {1 x 2 y}
+
+test rows-6 {duplicate statement} -constraints table -body {
+    set sql {select b from test order by a}
+    dbi_rows $sql
+    dbi_rows $sql
+} -cleanup {
+    unset -nocomplain sql
+} -result {x y}
+
+test rows-7 {NULLs} -constraints table -body {
+    dbi_rows {select NULL, NULL, NULL}
+} -result {{} {} {}}
+
+test rows-8 {value < static space} -constraints table -body {
+    string length [dbi_rows {select repeat('x', 199)}]
+} -result 199
+
+test rows-9 {value = static space} -constraints table -body {
+    string length [dbi_rows {select repeat('x', 200)}]
+} -result 200
+
+test rows-10 {value > static space} -constraints table -body {
+    string length [dbi_rows {select repeat('x', 201)}]
+} -result 201
+
+test rows-11 {value >>> static space} -constraints table -body {
+    string length [dbi_rows {select repeat('x', 4000)}]
+} -result 4000
+
+
+
+
+
+test 1row-1 {expect 1 row} -constraints table -body {
+    dbi_1row {select b from test where a = 1}
+	set b
+} -cleanup {
+	unset -nocomplain b
+} -result x
+
+test 1row-2 {expect missing row} -constraints table -body {
+    dbi_1row {select b from test where a = 99}
+} -returnCodes error -result {query was not a statement returning rows}
+
+test 1row-3 {rollback suprise dml} -constraints {knownBug table} -body {
+    catch {dbi_1row {insert into test values (0, 'zzz')}} errmsg
+    list $errmsg [dbi_rows {select * from test}]
+} -cleanup {
+	unset -nocomplain errmsg
+} -result {{query was not a statement returning rows.} {1 x 2 y}}
+
+
+
+test genrow-1 {generate row data} -constraints table -body {
+    dbi_1row {select 'xxx' as a}
+	set a
+} -cleanup {
+	unset -nocomplain a
+} -result xxx
+
+
+
+test syntaxError-1 {syntax error in expression} -constraints table -body {
+    dbi_1row {foo}
+} -returnCodes error -match glob -result {*error*}
+
+
+
+test dml-1 {dml rows affected} -constraints {knownBug table} -body {
+    dbi_dml {update test set b = 'z'}
+} -cleanup {
+    dbi_dml {update test set b = 'x' where a = 1}
+    dbi_dml {update test set b = 'y' where a = 2}
+} -result 2
+
+test dml-2 {duplicate statement: dml} -constraints {knownBug table} -body {
+    dbi_dml {update test set b = 'z' where a = 1}
+    dbi_dml {update test set b = 'z' where a = 1}
+} -cleanup {
+    dbi_dml {update test set b = 'x' where a = 1}
+} -result 1
+
+
+
+test bind-1 {bind vars} -body {
+	set a x
+	set b y
+	dbi_rows {select :a, :b}
+} -cleanup {
+	unset -nocomplain a b
+} -result {x y}
+
+test bind-2 {bind long vars} -body {
+	set a xxx
+	set b yyy
+	dbi_rows {select :a, :b}
+} -cleanup {
+	unset -nocomplain a b
+} -result {xxx yyy}
+
+
+
+test transaction-1 {transaction ok} -constraints table -body {
+    dbi_eval -transaction repeatable {
+        dbi_dml  {insert into test values (3, 'z')}
+        dbi_rows {select * from test order by a}
+    }
+} -cleanup {
+    dbi_dml {delete from test where a = 3}
+} -result {1 x 2 y 3 z}
+
+test transaction-2 {transaction error w/rollback} -constraints table -body {
+    if {[catch {
+        dbi_eval -transaction repeatable {
+            dbi_dml {insert into test values (3, 'z')}
+            error "error foo"
+        }
+    } errmsg]} {
+        list $errmsg [dbi_rows {select * from test order by a}]
+    }
+} -result {{error foo} {1 x 2 y}}
+
+test transaction-3 {nested transaction} -constraints table -body {
+    dbi_eval -transaction repeatable {
+        dbi_dml  {insert into test values (3, 'z')}
+		dbi_eval -transaction repeatable {
+			dbi_dml  {update test set b = 'Z' where a = 3}
+		}
+        dbi_rows {select * from test order by a}
+    }
+} -cleanup {
+    dbi_dml {delete from test where a = 3}
+} -result {1 x 2 y 3 Z}
+
+test transaction-4 {nested transaction w/rollback} -constraints table -body {
+    dbi_eval -transaction repeatable {
+        dbi_dml  {insert into test values (3, 'z')}
+		catch {
+			dbi_eval -transaction repeatable {
+				dbi_dml  {update test set b = 'Z' where a = 3}
+				error "foo error"
+			}
+		} errmsg
+    }
+	dbi_rows {select * from test order by a}
+} -cleanup {
+    dbi_dml {delete from test where a = 3}
+} -result {1 x 2 y 3 z}
+
+
+
+
+
+
+test connect-1 {invalid datasource} -body {
+    dbi_1row -pool pool2 {select * from test}
+} -returnCodes error -result {handle allocation failed}
+
+test connect-2 {database does not exist} -body {
+    dbi_1row -pool pool3 {select * from test}
+} -returnCodes error -result {handle allocation failed}
+
+
+
+catch {
+    dbi_dml {drop table test}
+}
+
+
+cleanupTests
+return
+
+
+
+ns_log warning ---> beginning timing tests...
+
+
+catch {dbi_dml {drop table test2}}
+
+dbi_dml {
+	create table test2 (
+            a integer,
+            b integer,
+            c integer,
+            d integer,
+            e integer,
+            f integer,
+            g integer,
+            h integer
+        );
+}
+dbi_dml {insert into test2 values (0, 1, 2, 3, 4, 5, 6, 7)}
+dbi_dml {insert into test2 values (9, 8, 7, 6, 5, 4, 3, 2)}
+dbi_dml {insert into test2 values (0, 1, 2, 3, 4, 5, 6, 7)}
+dbi_dml {insert into test2 values (9, 8, 7, 6, 5, 4, 3, 2)}
+
+
+proc q1 {} {
+    foreach {0 1 2 3 4 5 6 7} [dbi_rows {select a, b, c, d, e, f, g, h from test2}] {
+        append result "$0 $1 $2 $3 $4 $5 $6 $7 "
+    }
+    return $result
+}
+
+proc q2 {} {
+    dbi_format {select a, b, c, d, e, f, g, h from test2} {%s %s %s %s %s %s %s %s }
+}
+
+proc q3 {} {
+    dbi_string {select a, b, c, d, e, f, g, h from test2}
+}
+
+proc q4 {} {
+    dbi_rows {select a, b, c, d, e, f, g, h from test2}
+}
+
+ns_log warning q1: [dbi_eval { time {q1} 10000 }]
+ns_log warning q1: [dbi_eval { time {q1} 10000 }]
+ns_log warning q1: [dbi_eval { time {q1} 10000 }]
+ns_log warning q1: [dbi_eval { time {q1} 10000 }]
+ns_log warning q1: [dbi_eval { time {q1} 10000 }]
+
+ns_log warning q2: [dbi_eval { time {q2} 10000 }]
+ns_log warning q2: [dbi_eval { time {q2} 10000 }]
+ns_log warning q2: [dbi_eval { time {q2} 10000 }]
+ns_log warning q2: [dbi_eval { time {q2} 10000 }]
+ns_log warning q2: [time {q2} 10000]
+
+# ns_log warning q3: [time {q3} 10000]
+# ns_log warning q3: [time {q3} 10000]
+# ns_log warning q3: [time {q3} 10000]
+# ns_log warning q3: [time {q3} 10000]
+# ns_log warning q3: [time {q3} 10000]
+
+ns_log warning q4: [dbi_eval { time {q4} 10000 }]
+ns_log warning q4: [dbi_eval { time {q4} 10000 }]
+ns_log warning q4: [dbi_eval { time {q4} 10000 }]
+ns_log warning q4: [dbi_eval { time {q4} 10000 }]
+ns_log warning q4: [dbi_eval { time {q4} 10000 }]
+
+
+catch {dbi_dml {drop table test2}}
+
+
+cleanupTests
