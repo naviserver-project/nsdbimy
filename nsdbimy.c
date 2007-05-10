@@ -446,7 +446,7 @@ PrepareClose(Dbi_Handle *handle, Dbi_Statement *stmt)
 
 static int
 Exec(Dbi_Handle *handle, Dbi_Statement *stmt,
-     CONST char **values, unsigned int *lengths, unsigned int numVals)
+     Dbi_Value *values, unsigned int numValues)
 {
     MyHandle    *myHandle = handle->driverData;
     MyStatement *myStmt   = stmt->driverData;
@@ -459,14 +459,20 @@ Exec(Dbi_Handle *handle, Dbi_Statement *stmt,
      * Bind values to parameters.
      */
 
-    if (numVals > 0) {
+    if (numValues > 0) {
 
         memset(bind, 0, sizeof(bind));
 
-        for (i = 0; i < numVals; i++) {
-            bind[i].buffer_type   = values[i] ? MYSQL_TYPE_STRING : MYSQL_TYPE_NULL;
-            bind[i].buffer        = values[i];
-            bind[i].buffer_length = lengths[i];
+        for (i = 0; i < numValues; i++) {
+            if (values[i].data != NULL) {
+                bind[i].buffer_type = values[i].binary
+                    ? MYSQL_TYPE_BLOB
+                    : MYSQL_TYPE_STRING;
+            } else {
+                bind[i].buffer_type = MYSQL_TYPE_NULL;
+            }
+            bind[i].buffer        = (char *) values[i].data;
+            bind[i].buffer_length = values[i].length;
         }
 
         if (mysql_stmt_bind_param(myStmt->st, bind)) {
@@ -514,18 +520,22 @@ static int
 NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
           unsigned int colIdx, unsigned int rowIdx, Dbi_Value *value)
 {
-    MyStatement    *myStmt = stmt->driverData;
-    Ns_DString     *ds     = &myStmt->valueDs;
-    MYSQL_BIND      bind;
-    my_bool         is_null, error;
-    unsigned long   length;
+    MyStatement           *myStmt = stmt->driverData;
+    Ns_DString            *ds     = &myStmt->valueDs;
+    MYSQL_BIND             bind;
+    MYSQL_FIELD           *field;
+    enum enum_field_types  buffer_type;
+    my_bool                is_null, error;
+    unsigned long          length;
 
     /*
      * Reposition to the next row.
      */
 
     if (colIdx == 0) {
+
         switch (mysql_stmt_fetch(myStmt->st)) {
+
         case MYSQL_NO_DATA:
             return DBI_DONE;
 
@@ -537,7 +547,31 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
             /* fallthrough */
             break;
         }
-        /* mysql_stmt_data_seek(myStmt->st, (my_ulonglong) rowIdx); */
+    }
+
+    /*
+     * Check the actual column type of the result so we can ask
+     * for binary blobs in native format. Everything else we ask
+     * mysql to convert to a string.
+     */
+
+    field = mysql_fetch_field_direct(myStmt->meta, colIdx);
+    if (field == NULL) {
+        MyException(handle, myStmt->st);
+        return NS_ERROR;
+    }
+
+    switch (field->type) {
+
+    case MYSQL_TYPE_BLOB:
+    case MYSQL_TYPE_TINY_BLOB:
+    case MYSQL_TYPE_MEDIUM_BLOB:
+    case MYSQL_TYPE_LONG_BLOB:
+        buffer_type = MYSQL_TYPE_BLOB;
+        break;
+
+    default:
+        buffer_type = MYSQL_TYPE_STRING;
     }
 
     /*
@@ -553,7 +587,7 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
     bind.length        = &length;
     bind.is_null       = &is_null;
     bind.error         = &error;
-    bind.buffer_type   = MYSQL_TYPE_STRING;
+    bind.buffer_type   = buffer_type;
 
     length = 0;
     is_null = 0;
@@ -584,7 +618,7 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
 
     value->data   = is_null ? NULL : Ns_DStringValue(ds);
     value->length = (unsigned int) Ns_DStringLength(ds);
-    value->binary = 0;
+    value->binary = (buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
 
     return DBI_VALUE;
 }
