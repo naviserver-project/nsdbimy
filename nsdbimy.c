@@ -210,33 +210,70 @@ Open(ClientData configData, Dbi_Handle *handle)
     InitThread();
 
     conn = mysql_init(NULL);
-    mysql_options(conn, MYSQL_READ_DEFAULT_GROUP, "nsdbimysql");
-    if (!mysql_real_connect(conn, myCfg->host, myCfg->user, myCfg->password,
-                            myCfg->db, myCfg->port, myCfg->unixdomain, 0)) {
 
-        Dbi_SetException(handle, "dbimysql", "code: %d msg: %s",
-                         mysql_errno(conn), mysql_error(conn));
+    /*
+     * Set the group within the my.cnf file to read dbi options from.
+     */
+
+    mysql_options(conn, MYSQL_READ_DEFAULT_GROUP, "nsdbimysql");
+
+    /*
+     * Connect and make sure we're in autocomit mode.
+     */
+
+    if (!mysql_real_connect(conn, myCfg->host, myCfg->user, myCfg->password,
+                            myCfg->db, myCfg->port, myCfg->unixdomain, 0)
+        || mysql_autocommit(conn, 1)) {
+
+        Dbi_SetException(handle, mysql_sqlstate(conn), mysql_error(conn));
         mysql_close(conn);
         return NS_ERROR;
     }
+
     myHandle = ns_calloc(1, sizeof(MyHandle));
     myHandle->conn = conn;
     handle->driverData = myHandle;
 
     /*
      * Make sure the database is expecting and returning utf8 character data.
+     * Refuse to load if this doesn't work.
      */
 
     if (Dbi_ExecDirect(handle, "set names 'utf8'") != NS_OK) {
+        Dbi_LogException(handle, Error);
+
+        mysql_close(myHandle->conn);
+        ns_free(myHandle);
+        handle->driverData = NULL;
+
         return NS_ERROR;
+    }
+
+    /*
+     * Set the default time zone to UTC.
+     */
+
+    if (Dbi_ExecDirect(handle, "set session time_zone='+0:00'") != NS_OK) {
+        Dbi_LogException(handle, Error);
+    }
+    
+
+    /*
+     * Enable the 'turn off the bugs' options.
+     */
+
+    if (Dbi_ExecDirect(handle, "set session sql_mode='ansi,traditional'")
+            != NS_OK) {
+        Dbi_LogException(handle, Error);
     }
 
     /*
      * Extra handle info to help with debuging.
      */
 
-    Dbi_SetException(handle, "00000", "(%s)",
-                     mysql_get_server_info(conn));
+    Dbi_SetException(handle, "00000", "version=%s host=%s",
+                     mysql_get_server_info(conn),
+                     mysql_get_host_info(conn));
 
     return NS_OK;
 }
