@@ -154,6 +154,8 @@ Ns_ModuleInit(CONST char *server, CONST char *module)
     static CONST char *database   = "mysql";
     static int         once = 0;
 
+    Dbi_LibInit();
+
     if (!mysql_thread_safe()) {
         Ns_Log(Error, "dbimy: mysql library not compiled thread safe");
         return NS_ERROR;
@@ -545,7 +547,7 @@ Exec(Dbi_Handle *handle, Dbi_Statement *stmt,
  *      Fetch the value of the given row and column.
  *
  * Results:
- *      DBI_VALUE, DBI_DONE, DBI_ERROR.
+ *      NS_OK or NS_ERROR.
  *
  * Side effects:
  *      None.
@@ -555,7 +557,7 @@ Exec(Dbi_Handle *handle, Dbi_Statement *stmt,
 
 static int
 NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
-          unsigned int colIdx, unsigned int rowIdx, Dbi_Value *value)
+          Dbi_Value *value, int *endPtr)
 {
     MyStatement           *myStmt = stmt->driverData;
     Ns_DString            *ds     = &myStmt->valueDs;
@@ -569,15 +571,17 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
      * Reposition to the next row.
      */
 
-    if (colIdx == 0) {
+    if (value->colIdx == 0) {
 
         switch (mysql_stmt_fetch(myStmt->st)) {
 
         case MYSQL_NO_DATA:
-            return DBI_DONE;
+            *endPtr = 1;
+            return NS_OK;
 
         case 1:
-            return DBI_ERROR;
+            MyException(handle, myStmt->st);
+            return NS_ERROR;
 
         case 0:
         case MYSQL_DATA_TRUNCATED:
@@ -592,7 +596,7 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
      * mysql to convert to a string.
      */
 
-    field = mysql_fetch_field_direct(myStmt->meta, colIdx);
+    field = mysql_fetch_field_direct(myStmt->meta, value->colIdx);
     if (field == NULL) {
         MyException(handle, myStmt->st);
         return NS_ERROR;
@@ -630,9 +634,9 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
     is_null = 0;
     error = 0;
 
-    if (mysql_stmt_fetch_column(myStmt->st, &bind, colIdx, 0)) {
+    if (mysql_stmt_fetch_column(myStmt->st, &bind, value->colIdx, 0)) {
         MyException(handle, myStmt->st);
-        return DBI_ERROR;
+        return NS_ERROR;
     }
 
     if (length > bind.buffer_length) {
@@ -641,9 +645,9 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
         bind.buffer        = Ns_DStringValue(ds);
         bind.buffer_length = Ns_DStringLength(ds);
 
-        if (mysql_stmt_fetch_column(myStmt->st, &bind, colIdx, 0)) {
+        if (mysql_stmt_fetch_column(myStmt->st, &bind, value->colIdx, 0)) {
             MyException(handle, myStmt->st);
-            return DBI_ERROR;
+            return NS_ERROR;
         }
     } else {
         Ns_DStringSetLength(ds, (int) length);
@@ -657,7 +661,9 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
     value->length = (unsigned int) Ns_DStringLength(ds);
     value->binary = (buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
 
-    return DBI_VALUE;
+    *endPtr = 0;
+
+    return NS_OK;
 }
 
 

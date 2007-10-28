@@ -268,12 +268,24 @@ test transaction-4 {nested transaction w/rollback} -constraints table -body {
 
 
 test connect-1 {invalid datasource} -body {
-    dbi_1row -pool pool2 {select a, b from test}
+    dbi_rows -pool pool2 {select a, b from test}
 } -returnCodes error -result {handle allocation failed}
 
 test connect-2 {database does not exist} -body {
-    dbi_1row -pool pool3 {select a, b from test}
+    dbi_rows -pool pool3 {select a, b from test}
 } -returnCodes error -result {handle allocation failed}
+
+
+
+
+test thread-2 {database does not exist} -body {
+    ns_thread wait [ns_thread begin {
+        dbi_rows -pool thread {select a, b from test}
+        dbi_rows -pool thread {select a, b from test}
+    }]
+} -result {1 x 2 y}
+
+
 
 
 

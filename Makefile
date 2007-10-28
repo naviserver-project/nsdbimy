@@ -22,14 +22,17 @@
 # version of this file under either the License or the GPL.
 #
 
-NAVISERVER  = /usr/local/ns
-NSD			= $(NAVISERVER)/bin/nsd
+NAVISERVER   = /usr/local/ns
+NSD          = $(NAVISERVER)/bin/nsd
 
-MODNAME		= nsdbimy
+MYSQL_CONFIG = mysql_config
 
-MOD			= $(MODNAME).so
-MODOBJS		= $(MODNAME).o
-MODLIBS		= -lnsdbi -L/usr/lib/mysql -lmysqlclient_r
+
+MODNAME      = nsdbimy
+
+MOD          = $(MODNAME).so
+MODOBJS      = $(MODNAME).o
+MODLIBS      = -lnsdbi `$(MYSQL_CONFIG) --libs_r`
 
 
 include $(NAVISERVER)/include/Makefile.module
