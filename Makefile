@@ -47,18 +47,25 @@ export DBIMY_PASSWORD=
 export DBIMY_DBNAME=test
 
 
+NS_TEST_CFG		= -c -d -t tests/config.tcl
+NS_TEST_ALL		= tests/all.tcl $(TCLTESTARGS)
+LD_LIBRARY_PATH	= LD_LIBRARY_PATH="./::$$LD_LIBRARY_PATH"
+
 test: all
-	LD_LIBRARY_PATH="./:$LD_LIBRARY_PATH" $(NSD) -c -d -t tests/config.tcl tests/all.tcl $(TESTFLAGS) $(TCLTESTARGS)
+	export $(LD_LIBRARY_PATH); $(NSD) $(NS_TEST_CFG) $(NS_TEST_ALL)
 
 runtest: all
-	LD_LIBRARY_PATH="./:$LD_LIBRARY_PATH" $(NSD) -c -d -t tests/config.tcl
+	export $(LD_LIBRARY_PATH); $(NSD) $(NS_TEST_CFG)
 
 gdbtest: all
-	@echo "set args -c -d -t tests/config.tcl tests/all.tcl $(TESTFLAGS) $(TCLTESTARGS)" > gdb.run
-	LD_LIBRARY_PATH="./:$LD_LIBRARY_PATH" gdb -x gdb.run $(NSD)
+	@echo set args $(NS_TEST_CFG) $(NS_TEST_ALL) > gdb.run
+	export $(LD_LIBRARY_PATH); gdb -x gdb.run $(NSD)
 	rm gdb.run
 
 gdbruntest: all
-	@echo "set args -c -d -t tests/config.tcl" > gdb.run
-	LD_LIBRARY_PATH="./:$LD_LIBRARY_PATH" gdb -x gdb.run $(NSD)
+	@echo set args $(NS_TEST_CFG) $(NS_TEST_ALL) > gdb.run
+	export $(LD_LIBRARY_PATH); gdb -x gdb.run $(NSD)
 	rm gdb.run
+
+memcheck: all
+	export $(LD_LIBRARY_PATH); valgrind --tool=memcheck $(NSD) $(NS_TEST_CFG) $(NS_TEST_ALL)
