@@ -1,0 +1,7 @@
+
+This is the nsdbimy database driver. It connects a MySQL database
+to a NaviServer web server using the nsdbi interface.
+
+It provides no new commands. See nsdbi.n for database command details.
+
+See sample-config.tcl for setup details.
