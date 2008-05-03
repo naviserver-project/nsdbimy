@@ -27,12 +27,19 @@ NSD          = $(NAVISERVER)/bin/nsd
 
 MYSQL_CONFIG = mysql_config
 
+ifdef EMBED
+	MYSQL_LIBS = $(shell $(MYSQL_CONFIG) --libmysqld-libs)
+else
+	MYSQL_LIBS = $(shell $(MYSQL_CONFIG) --libs_r) \
+		$(LDRFLAG)$(shell $(MYSQL_CONFIG) --libs_r | sed -r -e 's/-L([^ ]+).*/\1/')
+endif
+
 
 MODNAME      = nsdbimy
 
 MOD          = $(MODNAME).so
 MODOBJS      = $(MODNAME).o
-MODLIBS      = -lnsdbi `$(MYSQL_CONFIG) --libs_r`
+MODLIBS      = -lnsdbi $(MYSQL_LIBS)
 
 
 include $(NAVISERVER)/include/Makefile.module
@@ -63,7 +70,7 @@ gdbtest: all
 	rm gdb.run
 
 gdbruntest: all
-	@echo set args $(NS_TEST_CFG) $(NS_TEST_ALL) > gdb.run
+	@echo set args $(NS_TEST_CFG) > gdb.run
 	export $(LD_LIBRARY_PATH); gdb -x gdb.run $(NSD)
 	rm gdb.run
 

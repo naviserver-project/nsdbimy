@@ -5,3 +5,48 @@ to a NaviServer web server using the nsdbi interface.
 It provides no new commands. See nsdbi.n for database command details.
 
 See sample-config.tcl for setup details.
+
+
+* Embedded Server
+
+To build the embedded server, you need to configure mysql with
+the --enable-embedded-server option. This creates the libmysqld.a
+library.
+
+You need to build nsdbimy with the EMBED=1 option:
+
+  $ make NAVISERVER=/path/to/naviserver \
+      MYSQL_CONFIG=/path/to/mysql/bin/mysql_config \
+      EMBED=1
+
+You need to create a data directory for the database files:
+
+  $ mkdir /srv/example.com/data
+  $ /path/to/mysql/bin/mysql_install_db --basedir=/path/to/mysql \
+      --datadir=/srv/example.com/data
+
+And you need to tell the embedded server code how to find the data
+directory. In one of the my.cnf files, e.g. the .my.cnf in the home
+directory of the user who runs the naviserver, add the following:
+
+  [embedded]
+  datadir=/srv/example.com/data
+
+In the naviserver configuration file, you can specify one or more
+pools to use the embedded server code with the "embed true" option.
+You should also set "maxhandles" to 0 so that each thread can access
+the database without locking.
+
+  ns_section "ns/server/server1/modules"
+  ns_param   embedded     nsdbimy.so
+  ns_param   dbserver     nsdbimy.so
+
+  ns_section "ns/server/server1/module/embedded"
+  ns_param   embed        true
+  ns_param   maxhandles   0
+  ns_param   database     mysql
+
+  ns_section "ns/server/server1/module/dbserver"
+  ns_param   embed        false
+  ns_param   maxhandles   20
+  ns_param   database     mysql

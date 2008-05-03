@@ -42,6 +42,7 @@ NS_EXPORT int Ns_ModuleVersion = 1;
 
 typedef struct MyConfig {
     char        *module;
+    int          embed;
     CONST char  *db;
     CONST char  *user;
     CONST char  *password;
@@ -103,6 +104,7 @@ static void MyException(Dbi_Handle *, MYSQL_STMT *);
 
 static void InitThread(void);
 static Ns_TlsCleanup CleanupThread;
+static Ns_Callback AtExit;
 
 
 /*
@@ -150,7 +152,7 @@ Ns_ModuleInit(CONST char *server, CONST char *module)
 {
     MyConfig          *myCfg;
     char              *path;
-    static CONST char *drivername = "my";
+    static CONST char *drivername = "dbimy";
     static CONST char *database   = "mysql";
     static int         once = 0;
 
@@ -163,22 +165,36 @@ Ns_ModuleInit(CONST char *server, CONST char *module)
 
     if (!once) {
         once = 1;
-        Ns_TlsAlloc(&tls, CleanupThread);
-        if (mysql_server_init(0, NULL, NULL)) {
+        if (mysql_library_init(0, NULL, NULL)) {
             return NS_ERROR;
         }
+        Ns_TlsAlloc(&tls, CleanupThread);
+        Ns_RegisterAtExit(AtExit, NULL);
+        Ns_RegisterProcInfo(AtExit, "dbimy:cleanshutdown", NULL);
     }
 
     path = Ns_ConfigGetPath(server, module, NULL);
 
     myCfg = ns_malloc(sizeof(MyConfig));
     myCfg->module     = ns_strdup(module);
+    myCfg->embed      = Ns_ConfigBool(path,   "embed",      0);
     myCfg->db         = Ns_ConfigString(path, "database",   "mysql");
     myCfg->user       = Ns_ConfigString(path, "user",       "root");
     myCfg->password   = Ns_ConfigString(path, "password",   NULL);
     myCfg->host       = Ns_ConfigString(path, "host",       NULL);
     myCfg->port       = Ns_ConfigInt(path,    "port",       0);
     myCfg->unixdomain = Ns_ConfigString(path, "unixdomain", NULL);
+
+    if (*myCfg->db == '\0') {
+        Ns_Log(Error, "dbimy[%s]: database '' is invalid", module);
+        return NS_ERROR;
+    }
+
+    if (myCfg->embed && !mysql_embedded()) {
+        Ns_Log(Error, "dbimy[%s]: driver not compiled with embedded capability",
+               module);
+        return NS_ERROR;
+    }
 
     return Dbi_RegisterDriver(server, module,
                               drivername, database,
@@ -212,12 +228,22 @@ Open(ClientData configData, Dbi_Handle *handle)
     InitThread();
 
     conn = mysql_init(NULL);
+    if (!conn) {
+        Ns_Fatal("dbimy: Open: mysql_init() failed");
+    }
+
+    if (myCfg->embed) {
+        mysql_options(conn, MYSQL_OPT_USE_EMBEDDED_CONNECTION, NULL);
+    } else {
+        mysql_options(conn, MYSQL_OPT_USE_REMOTE_CONNECTION, NULL);
+    }
 
     /*
      * Set the group within the my.cnf file to read dbi options from.
      */
 
-    mysql_options(conn, MYSQL_READ_DEFAULT_GROUP, "nsdbimysql");
+    mysql_options(conn, MYSQL_READ_DEFAULT_FILE, "./dbimy.cnf");
+    mysql_options(conn, MYSQL_READ_DEFAULT_GROUP, "dbimy");
 
     /*
      * Connect and make sure we're in autocomit mode.
@@ -395,7 +421,7 @@ Prepare(Dbi_Handle *handle, Dbi_Statement *stmt,
     if (stmt->driverData == NULL) {
 
         if ((st = mysql_stmt_init(myHandle->conn)) == NULL) {
-            Ns_Fatal("dbimysql: Prepare: out of memory allocating statement.");
+            Ns_Fatal("dbimy: Prepare: out of memory allocating statement.");
         }
         if (mysql_stmt_prepare(st, stmt->sql, stmt->length)) {
             MyException(handle, st);
@@ -521,18 +547,25 @@ Exec(Dbi_Handle *handle, Dbi_Statement *stmt,
     }
 
     /*
-     * Execute the statment and buffer the entire result set.
+     * Execute the statment and tell mysql where to bind the result data.
      */
 
     if (mysql_stmt_execute(myStmt->st)) {
         MyException(handle, myStmt->st);
         return NS_ERROR;
     }
-    /* buffer entire result: mysql_stmt_store_result(myStmt->st) */
 
-    if (mysql_stmt_field_count(myStmt->st)
-            && mysql_stmt_bind_result(myStmt->st, myHandle->bind)) {
-        MyException(handle, myStmt->st);
+    if (mysql_stmt_field_count(myStmt->st)) {
+
+        if (!mysql_embedded()) {
+            /* Buffer the entire result set to the client. */
+            mysql_stmt_store_result(myStmt->st);
+        }
+
+        if (mysql_stmt_bind_result(myStmt->st, myHandle->bind)) {
+            MyException(handle, myStmt->st);
+            return NS_ERROR;
+        }
     }
 
     return NS_OK;
@@ -887,8 +920,8 @@ static void
 MyException(Dbi_Handle *handle, MYSQL_STMT *st)
 {
     if (mysql_stmt_errno(st) == CR_OUT_OF_MEMORY) {
-        Ns_Fatal("dbimysql: CR_OUT_OF_MEMORY: %s",
-                 mysql_stmt_error(st));
+        Ns_Fatal("dbimy[%s]: CR_OUT_OF_MEMORY: %s",
+                 Dbi_PoolName(handle->pool), mysql_stmt_error(st));
     }
     Dbi_SetException(handle, mysql_stmt_sqlstate(st),
                      mysql_stmt_error(st));
@@ -903,8 +936,8 @@ MyException(Dbi_Handle *handle, MYSQL_STMT *st)
  *      Initialise and cleanup msql thread data for each thread
  *      that calls a mysql_* function.
  *
- *      InitThread is called from Open and Exec, the two functions
- *      which a thread can call before calling any other dbi function.
+ *      InitThread is called from Open, Prepare and Exec, the 3 functions
+ *      which a thread must call before calling any other dbi functions.
  *
  *      CleanupThread is a Tls callback which gets called only when a
  *      thread exits.
@@ -913,7 +946,7 @@ MyException(Dbi_Handle *handle, MYSQL_STMT *st)
  *      None.
  *
  * Side effects:
- *      MySQL memory is freed.
+ *      MySQL memory is freed on thread exit.
  *
  *----------------------------------------------------------------------
  */
@@ -940,4 +973,29 @@ CleanupThread(void *arg)
         Ns_Log(Debug, "dbimy: CleanupThread");
         mysql_thread_end();
     }
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * AtExit --
+ *
+ *      Cleanup the mysql library when the server exits. This is
+ *      important when running the embedded server.
+ *
+ * Results:
+ *      None.
+ *
+ * Side effects:
+ *      Embedded mysql may flush data to disk and close tables cleanly.
+ *
+ *----------------------------------------------------------------------
+ */
+
+static void
+AtExit(void *arg)
+{
+    Ns_Log(Debug, "dbimy: AtExit");
+    mysql_library_end();
 }

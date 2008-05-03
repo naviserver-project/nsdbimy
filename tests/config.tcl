@@ -46,6 +46,7 @@ ns_param   pool1           $homedir/nsdbimy.so
 ns_param   pool2           $homedir/nsdbimy.so
 ns_param   pool3           $homedir/nsdbimy.so
 ns_param   thread          $homedir/nsdbimy.so
+ns_param   embed           $homedir/nsdbimy.so
 
 #
 # Database configuration.
@@ -63,18 +64,27 @@ ns_param   checkinterval   30
 ns_param   user            [ns_env get -nocomplain DBIMY_USER]
 ns_param   password        [ns_env get -nocomplain DBIMY_PASSWORD]
 ns_param   database        test
+ns_param   unixdomain      /var/lib/mysql/mysql.sock
 
 ns_section "ns/server/server1/module/pool2"
 ns_param   maxhandles      1
 ns_param   user            "invalid user name"
+ns_param   unixdomain      /var/lib/mysql/mysql.sock
 
 ns_section "ns/server/server1/module/pool3"
 ns_param   maxhandles      1
 ns_param   database        "invalid database name"
+ns_param   unixdomain      /var/lib/mysql/mysql.sock
 
 ns_section "ns/server/server1/module/thread"
 ns_param   maxhandles      0  ;# Per-thread handles
 ns_param   user            [ns_env get -nocomplain DBIMY_USER]
 ns_param   password        [ns_env get -nocomplain DBIMY_PASSWORD]
 ns_param   database        test
+ns_param   unixdomain      /var/lib/mysql/mysql.sock
 
+ns_section "ns/server/server1/module/embed"
+ns_param   embed           yes
+ns_param   maxhandles      0
+ns_param   user            ""
+ns_param   database        "mysql"
