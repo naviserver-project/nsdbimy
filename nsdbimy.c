@@ -93,7 +93,8 @@ static Dbi_BindVarProc      Bind;
 static Dbi_PrepareProc      Prepare;
 static Dbi_PrepareCloseProc PrepareClose;
 static Dbi_ExecProc         Exec;
-static Dbi_NextValueProc    NextValue;
+static Dbi_NextRowProc      NextRow;
+static Dbi_ColumnValueProc  ColumnValue;
 static Dbi_ColumnNameProc   ColumnName;
 static Dbi_TransactionProc  Transaction;
 static Dbi_FlushProc        Flush;
@@ -119,7 +120,8 @@ static Dbi_DriverProc procs[] = {
     {Dbi_PrepareProcId,      Prepare},
     {Dbi_PrepareCloseProcId, PrepareClose},
     {Dbi_ExecProcId,         Exec},
-    {Dbi_NextValueProcId,    NextValue},
+    {Dbi_NextRowProcId,      NextRow},
+    {Dbi_ColumnValueProcId,  ColumnValue},
     {Dbi_ColumnNameProcId,   ColumnName},
     {Dbi_TransactionProcId,  Transaction},
     {Dbi_FlushProcId,        Flush},
@@ -575,9 +577,52 @@ Exec(Dbi_Handle *handle, Dbi_Statement *stmt,
 /*
  *----------------------------------------------------------------------
  *
- * NextValue --
+ * NextRow --
  *
- *      Fetch the value of the given row and column.
+ *      Fetch the next row.
+ *
+ * Results:
+ *      NS_OK or NS_ERROR, endPtr set to 1 after last row has been fetched.
+ *
+ * Side effects:
+ *      None.
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int
+NextRow(Dbi_Handle *handle, Dbi_Statement *stmt, int *endPtr)
+{
+    MyStatement  *myStmt = stmt->driverData;
+    int           status = NS_OK;
+
+    switch (mysql_stmt_fetch(myStmt->st)) {
+
+    case MYSQL_NO_DATA:
+        *endPtr = 1;
+        break;
+
+    case 1:
+        MyException(handle, myStmt->st);
+        status = NS_ERROR;
+        break;
+
+    case 0:
+    case MYSQL_DATA_TRUNCATED:
+        /* fallthrough */
+        break;
+    }
+
+    return status;
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * ColumnValue --
+ *
+ *      Fetch the indicated value from the current row.
  *
  * Results:
  *      NS_OK or NS_ERROR.
@@ -589,8 +634,8 @@ Exec(Dbi_Handle *handle, Dbi_Statement *stmt,
  */
 
 static int
-NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
-          Dbi_Value *value, int *endPtr)
+ColumnValue(Dbi_Handle *handle, Dbi_Statement *stmt, unsigned int index,
+            Dbi_Value *value)
 {
     MyStatement           *myStmt = stmt->driverData;
     Ns_DString            *ds     = &myStmt->valueDs;
@@ -601,35 +646,12 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
     unsigned long          length;
 
     /*
-     * Reposition to the next row.
-     */
-
-    if (value->colIdx == 0) {
-
-        switch (mysql_stmt_fetch(myStmt->st)) {
-
-        case MYSQL_NO_DATA:
-            *endPtr = 1;
-            return NS_OK;
-
-        case 1:
-            MyException(handle, myStmt->st);
-            return NS_ERROR;
-
-        case 0:
-        case MYSQL_DATA_TRUNCATED:
-            /* fallthrough */
-            break;
-        }
-    }
-
-    /*
      * Check the actual column type of the result so we can ask
      * for binary blobs in native format. Everything else we ask
      * mysql to convert to a string.
      */
 
-    field = mysql_fetch_field_direct(myStmt->meta, value->colIdx);
+    field = mysql_fetch_field_direct(myStmt->meta, index);
     if (field == NULL) {
         MyException(handle, myStmt->st);
         return NS_ERROR;
@@ -667,7 +689,7 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
     is_null = 0;
     error = 0;
 
-    if (mysql_stmt_fetch_column(myStmt->st, &bind, value->colIdx, 0)) {
+    if (mysql_stmt_fetch_column(myStmt->st, &bind, index, 0)) {
         MyException(handle, myStmt->st);
         return NS_ERROR;
     }
@@ -678,7 +700,7 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
         bind.buffer        = Ns_DStringValue(ds);
         bind.buffer_length = Ns_DStringLength(ds);
 
-        if (mysql_stmt_fetch_column(myStmt->st, &bind, value->colIdx, 0)) {
+        if (mysql_stmt_fetch_column(myStmt->st, &bind, index, 0)) {
             MyException(handle, myStmt->st);
             return NS_ERROR;
         }
@@ -693,8 +715,6 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
     value->data   = is_null ? NULL : Ns_DStringValue(ds);
     value->length = (unsigned int) Ns_DStringLength(ds);
     value->binary = (buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
-
-    *endPtr = 0;
 
     return NS_OK;
 }
@@ -717,8 +737,8 @@ NextValue(Dbi_Handle *handle, Dbi_Statement *stmt,
  */
 
 static int
-ColumnName(Dbi_Handle *handle, Dbi_Statement *stmt,
-           unsigned int index, CONST char **columnPtr)
+ColumnName(Dbi_Handle *handle, Dbi_Statement *stmt, unsigned int index,
+           CONST char **columnPtr)
 {
     MyStatement *myStmt = stmt->driverData;
     MYSQL_FIELD *field;
