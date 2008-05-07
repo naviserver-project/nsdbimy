@@ -64,7 +64,10 @@ typedef struct MyHandle {
 
     Dbi_Isolation  defaultIsolation;
 
-    MYSQL_BIND     bind[64]; /* Scratch output bind buffers for result rows. */
+    Ns_DString     valueDs;  /* Buffer to hold a single result value. */
+
+    MYSQL_BIND     bind[DBI_MAX_BIND];
+    unsigned long  lengths[DBI_MAX_BIND];
 
 } MyHandle;
 
@@ -77,7 +80,6 @@ typedef struct MyStatement {
 
     MYSQL_STMT    *st;       /* A MySQL statement. */
     MYSQL_RES     *meta;     /* Result set describing column data. */
-    Ns_DString     valueDs;  /* Buffer to hold a single result value. */
 
 } MyStatement;
 
@@ -226,6 +228,7 @@ Open(ClientData configData, Dbi_Handle *handle)
     MyConfig *myCfg = configData;
     MyHandle *myHandle;
     MYSQL    *conn;
+    int       i;
 
     InitThread();
 
@@ -262,7 +265,13 @@ Open(ClientData configData, Dbi_Handle *handle)
 
     myHandle = ns_calloc(1, sizeof(MyHandle));
     myHandle->conn = conn;
+    Ns_DStringInit(&myHandle->valueDs);
     handle->driverData = myHandle;
+
+    for (i = 0; i < DBI_MAX_BIND; i++) {
+        myHandle->bind[i].length = myHandle->lengths + i;
+        myHandle->bind[i].buffer_type = MYSQL_TYPE_STRING;
+    }
 
     /*
      * Make sure the database is expecting and returning utf8 character data.
@@ -333,6 +342,7 @@ Close(Dbi_Handle *handle)
     assert(myHandle);
 
     mysql_close(myHandle->conn);
+    Ns_DStringFree(&myHandle->valueDs);
     ns_free(myHandle);
 
     handle->driverData = NULL;
@@ -417,6 +427,8 @@ Prepare(Dbi_Handle *handle, Dbi_Statement *stmt,
     MyStatement   *myStmt;
     MYSQL_STMT    *st;
     MYSQL_RES     *meta;
+    MYSQL_FIELD   *field;
+    int            i;
 
     InitThread();
 
@@ -434,26 +446,43 @@ Prepare(Dbi_Handle *handle, Dbi_Statement *stmt,
         *numColsPtr = mysql_stmt_field_count(st);
 
         /*
-         * Save the column metadata so we can figure out whether
-         * to ask for binary or text values when fetching.
+         * Figure out binary/text types for each column.
          */
 
+        meta = NULL;
+
         if (*numColsPtr > 0) {
-            meta = mysql_stmt_result_metadata(st);
-            if (meta == NULL) {
+
+            if ((meta = mysql_stmt_result_metadata(st)) == NULL) {
                 MyException(handle, st);
                 (void) mysql_stmt_close(st);
                 return NS_ERROR;
             }
-        } else {
-            meta = NULL;
+
+            for (i = 0; i < *numColsPtr; i++) {
+
+                if ((field = mysql_fetch_field_direct(meta, i)) == NULL) {
+                    MyException(handle, myStmt->st);
+                    (void) mysql_stmt_close(st);
+                    mysql_free_result(meta);
+                    return NS_ERROR;
+                }
+                switch (field->type) {
+                case MYSQL_TYPE_BLOB:
+                case MYSQL_TYPE_TINY_BLOB:
+                case MYSQL_TYPE_MEDIUM_BLOB:
+                case MYSQL_TYPE_LONG_BLOB:
+                    myHandle->bind[i].buffer_type = MYSQL_TYPE_BLOB;
+                    break;
+                default:
+                    myHandle->bind[i].buffer_type = MYSQL_TYPE_STRING;
+                }
+            }
         }
 
         myStmt = ns_malloc(sizeof(MyStatement));
         myStmt->st = st;
         myStmt->meta = meta;
-        Ns_DStringInit(&myStmt->valueDs);
-
         stmt->driverData = myStmt;
     }
 
@@ -488,7 +517,6 @@ PrepareClose(Dbi_Handle *handle, Dbi_Statement *stmt)
         mysql_free_result(myStmt->meta);
     }
     mysql_stmt_close(myStmt->st);
-    Ns_DStringFree(&myStmt->valueDs);
     ns_free(myStmt);
 
     stmt->driverData = NULL;
@@ -637,55 +665,21 @@ static int
 ColumnValue(Dbi_Handle *handle, Dbi_Statement *stmt, unsigned int index,
             Dbi_Value *value)
 {
-    MyStatement           *myStmt = stmt->driverData;
-    Ns_DString            *ds     = &myStmt->valueDs;
+    MyHandle              *myHandle = handle->driverData;
+    MyStatement           *myStmt   = stmt->driverData;
+    Ns_DString            *ds       = &myHandle->valueDs;
     MYSQL_BIND             bind;
-    MYSQL_FIELD           *field;
-    enum enum_field_types  buffer_type;
     my_bool                is_null, error;
-    unsigned long          length;
 
-    /*
-     * Check the actual column type of the result so we can ask
-     * for binary blobs in native format. Everything else we ask
-     * mysql to convert to a string.
-     */
-
-    field = mysql_fetch_field_direct(myStmt->meta, index);
-    if (field == NULL) {
-        MyException(handle, myStmt->st);
-        return NS_ERROR;
-    }
-
-    switch (field->type) {
-
-    case MYSQL_TYPE_BLOB:
-    case MYSQL_TYPE_TINY_BLOB:
-    case MYSQL_TYPE_MEDIUM_BLOB:
-    case MYSQL_TYPE_LONG_BLOB:
-        buffer_type = MYSQL_TYPE_BLOB;
-        break;
-
-    default:
-        buffer_type = MYSQL_TYPE_STRING;
-    }
-
-    /*
-     * Attempt to fetch the value into the existing space of a
-     * dstring buffer.  If that fails, resize the dstring.
-     */
-
-    Ns_DStringSetLength(ds, MAX(ds->spaceAvl, TCL_DSTRING_STATIC_SIZE) -1);
+    Ns_DStringSetLength(ds, myHandle->lengths[index]);
 
     memset(&bind, 0, sizeof(bind));
     bind.buffer        = Ns_DStringValue(ds);
     bind.buffer_length = Ns_DStringLength(ds);
-    bind.length        = &length;
     bind.is_null       = &is_null;
     bind.error         = &error;
-    bind.buffer_type   = buffer_type;
+    bind.buffer_type   = myHandle->bind[index].buffer_type;
 
-    length = 0;
     is_null = 0;
     error = 0;
 
@@ -694,27 +688,15 @@ ColumnValue(Dbi_Handle *handle, Dbi_Statement *stmt, unsigned int index,
         return NS_ERROR;
     }
 
-    if (length > bind.buffer_length) {
-
-        Ns_DStringSetLength(ds, (int) length);
-        bind.buffer        = Ns_DStringValue(ds);
-        bind.buffer_length = Ns_DStringLength(ds);
-
-        if (mysql_stmt_fetch_column(myStmt->st, &bind, index, 0)) {
-            MyException(handle, myStmt->st);
-            return NS_ERROR;
-        }
+    if (is_null) {
+        value->data   = NULL;
+        value->length = 0;
+        value->binary = (bind.buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
     } else {
-        Ns_DStringSetLength(ds, (int) length);
+        value->data   = Ns_DStringValue(ds);
+        value->length = (unsigned int) Ns_DStringLength(ds);
+        value->binary = (bind.buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
     }
-
-    /*
-     * Return the value.
-     */
-
-    value->data   = is_null ? NULL : Ns_DStringValue(ds);
-    value->length = (unsigned int) Ns_DStringLength(ds);
-    value->binary = (buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
 
     return NS_OK;
 }
@@ -881,17 +863,18 @@ IsolationLevel(Dbi_Handle *handle, Dbi_Isolation isolation)
 static int
 Flush(Dbi_Handle *handle, Dbi_Statement *stmt)
 {
-    MyStatement *myStmt = stmt->driverData;
-    int          status = NS_OK;
+    MyHandle    *myHandle = handle->driverData;
+    MyStatement *myStmt   = stmt->driverData;
+    int          status   = NS_OK;
 
     assert(myStmt);
 
-    if (myStmt->st && mysql_stmt_reset(myStmt->st)) {
+    if (myStmt->st && mysql_stmt_free_result(myStmt->st)) {
         MyException(handle, myStmt->st);
         status = NS_ERROR;
     }
-    Ns_DStringFree(&myStmt->valueDs);
-    Ns_DStringInit(&myStmt->valueDs);
+    Ns_DStringFree(&myHandle->valueDs);
+    Ns_DStringInit(&myHandle->valueDs);
 
     return status;
 }
