@@ -64,16 +64,14 @@ typedef struct MyHandle {
 
     Dbi_Isolation  defaultIsolation;
 
-    Ns_DString     valueDs;  /* Buffer to hold a single result value. */
-
     MYSQL_BIND     bind[DBI_MAX_BIND];
     unsigned long  lengths[DBI_MAX_BIND];
+    my_bool        nulls[DBI_MAX_BIND];
 
 } MyHandle;
 
 /*
- * The following structure manages a prepared statement
- * and it's input bind buffers.
+ * The following structure manages a prepared statement.
  */
 
 typedef struct MyStatement {
@@ -96,6 +94,7 @@ static Dbi_PrepareProc      Prepare;
 static Dbi_PrepareCloseProc PrepareClose;
 static Dbi_ExecProc         Exec;
 static Dbi_NextRowProc      NextRow;
+static Dbi_ColumnLengthProc ColumnLength;
 static Dbi_ColumnValueProc  ColumnValue;
 static Dbi_ColumnNameProc   ColumnName;
 static Dbi_TransactionProc  Transaction;
@@ -123,6 +122,7 @@ static Dbi_DriverProc procs[] = {
     {Dbi_PrepareCloseProcId, PrepareClose},
     {Dbi_ExecProcId,         Exec},
     {Dbi_NextRowProcId,      NextRow},
+    {Dbi_ColumnLengthProcId, ColumnLength},
     {Dbi_ColumnValueProcId,  ColumnValue},
     {Dbi_ColumnNameProcId,   ColumnName},
     {Dbi_TransactionProcId,  Transaction},
@@ -265,11 +265,11 @@ Open(ClientData configData, Dbi_Handle *handle)
 
     myHandle = ns_calloc(1, sizeof(MyHandle));
     myHandle->conn = conn;
-    Ns_DStringInit(&myHandle->valueDs);
     handle->driverData = myHandle;
 
     for (i = 0; i < DBI_MAX_BIND; i++) {
         myHandle->bind[i].length = myHandle->lengths + i;
+        myHandle->bind[i].is_null = myHandle->nulls + i;
         myHandle->bind[i].buffer_type = MYSQL_TYPE_STRING;
     }
 
@@ -342,7 +342,6 @@ Close(Dbi_Handle *handle)
     assert(myHandle);
 
     mysql_close(myHandle->conn);
-    Ns_DStringFree(&myHandle->valueDs);
     ns_free(myHandle);
 
     handle->driverData = NULL;
@@ -648,6 +647,41 @@ NextRow(Dbi_Handle *handle, Dbi_Statement *stmt, int *endPtr)
 /*
  *----------------------------------------------------------------------
  *
+ * ColumnLength --
+ *
+ *      Return the length of the column value and it's text/binary
+ *      type after a NextRow(). Null values are 0 length.
+ *
+ * Results:
+ *      NS_OK;
+ *
+ * Side effects:
+ *      None.
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int
+ColumnLength(Dbi_Handle *handle, Dbi_Statement *stmt, unsigned int index,
+             size_t *lengthPtr, int *binaryPtr)
+{
+    MyHandle *myHandle = handle->driverData;
+
+    if (myHandle->nulls[index]) {
+        /* MySQL sometimes reports spurious lengths for NULLs... */
+        *lengthPtr = 0;
+    } else {
+        *lengthPtr = (size_t) myHandle->lengths[index];
+    }
+    *binaryPtr = myHandle->bind[index].buffer_type == MYSQL_TYPE_BLOB ? 1 : 0;
+
+    return NS_OK;
+}
+
+
+/*
+ *----------------------------------------------------------------------
+ *
  * ColumnValue --
  *
  *      Fetch the indicated value from the current row.
@@ -663,39 +697,24 @@ NextRow(Dbi_Handle *handle, Dbi_Statement *stmt, int *endPtr)
 
 static int
 ColumnValue(Dbi_Handle *handle, Dbi_Statement *stmt, unsigned int index,
-            Dbi_Value *value)
+            char *value, size_t length)
 {
     MyHandle              *myHandle = handle->driverData;
     MyStatement           *myStmt   = stmt->driverData;
-    Ns_DString            *ds       = &myHandle->valueDs;
     MYSQL_BIND             bind;
-    my_bool                is_null, error;
-
-    Ns_DStringSetLength(ds, myHandle->lengths[index]);
+    my_bool                error;
 
     memset(&bind, 0, sizeof(bind));
-    bind.buffer        = Ns_DStringValue(ds);
-    bind.buffer_length = Ns_DStringLength(ds);
-    bind.is_null       = &is_null;
+    bind.buffer        = value;
+    bind.buffer_length = length;
     bind.error         = &error;
     bind.buffer_type   = myHandle->bind[index].buffer_type;
 
-    is_null = 0;
     error = 0;
 
     if (mysql_stmt_fetch_column(myStmt->st, &bind, index, 0)) {
         MyException(handle, myStmt->st);
         return NS_ERROR;
-    }
-
-    if (is_null) {
-        value->data   = NULL;
-        value->length = 0;
-        value->binary = (bind.buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
-    } else {
-        value->data   = Ns_DStringValue(ds);
-        value->length = (unsigned int) Ns_DStringLength(ds);
-        value->binary = (bind.buffer_type == MYSQL_TYPE_BLOB) ? 1 : 0;
     }
 
     return NS_OK;
@@ -863,20 +882,14 @@ IsolationLevel(Dbi_Handle *handle, Dbi_Isolation isolation)
 static int
 Flush(Dbi_Handle *handle, Dbi_Statement *stmt)
 {
-    MyHandle    *myHandle = handle->driverData;
-    MyStatement *myStmt   = stmt->driverData;
-    int          status   = NS_OK;
-
-    assert(myStmt);
+    MyStatement *myStmt = stmt->driverData;
 
     if (myStmt->st && mysql_stmt_free_result(myStmt->st)) {
         MyException(handle, myStmt->st);
-        status = NS_ERROR;
+        return NS_ERROR;
     }
-    Ns_DStringFree(&myHandle->valueDs);
-    Ns_DStringInit(&myHandle->valueDs);
 
-    return status;
+    return NS_OK;
 }
 
 
