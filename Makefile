@@ -22,6 +22,8 @@
 # version of this file under either the License or the GPL.
 #
 
+VERSION      = 0.2
+
 NAVISERVER   = /usr/local/ns
 NSD          = $(NAVISERVER)/bin/nsd
 
@@ -76,3 +78,15 @@ gdbruntest: all
 
 memcheck: all
 	export $(LD_LIBRARY_PATH); valgrind --tool=memcheck $(NSD) $(NS_TEST_CFG) $(NS_TEST_ALL)
+
+
+
+SRCS = nsdbimy.c
+EXTRA = README sample-config.tcl Makefile tests
+
+dist: all
+	rm -rf $(MODNAME)-$(VERSION)
+	mkdir $(MODNAME)-$(VERSION)
+	$(CP) $(SRCS) $(EXTRA) $(MODNAME)-$(VERSION)
+	hg log > $(MODNAME)-$(VERSION)/ChangeLog
+	tar czf $(MODNAME)-$(VERSION).tgz $(MODNAME)-$(VERSION)
