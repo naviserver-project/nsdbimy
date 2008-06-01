@@ -123,12 +123,12 @@ test 1row-2 {expect missing row} -constraints table -body {
     dbi_1row {select b from test where a = 99}
 } -returnCodes error -result {query was not a statement returning rows}
 
-test 1row-3 {rollback suprise dml} -constraints {knownBug table} -body {
+test 1row-3 {rollback suprise dml} -constraints table -body {
     catch {dbi_1row {insert into test (a, b) values (0, 'zzz')}} errmsg
     list $errmsg [dbi_rows {select a, b from test}]
 } -cleanup {
 	unset -nocomplain errmsg
-} -result {{query was not a statement returning rows.} {1 x 2 y}}
+} -result {{query was not a statement returning rows} {1 x 2 y}}
 
 
 
