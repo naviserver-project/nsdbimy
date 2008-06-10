@@ -1,0 +1,15 @@
+
+2008-06-10 nsdbimy-0.2 released
+
+* Driver can now be compiled against the embedded library, in which
+  case the mysql code runs in-process with naviserver.
+
+* Data buffers are now pre-sized to correct length to minimise
+  copying.
+
+* Update for new nsdbi-0.2 interface
+
+
+2008-04-17 nsdbimy-0.1 released
+
+Initial release of a new mysql driver for the nsdbi interface.
