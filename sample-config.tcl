@@ -2,9 +2,9 @@
 # nsdbimy configuration example.
 #
 #     The nsdbimy MySQL database driver accepts 6
-#     extra configuration parmeters:
+#     extra configuration parameters:
 #
-#     databse:    (default "mysql")
+#     database:    (default "mysql")
 #     user:       (default "root")
 #     password:   (default blank)
 #     host:       (mysql default)
@@ -44,7 +44,7 @@ ns_param   maxqueries     0    ;# Handle closed after maxqueries sql queries.
 ns_param   checkinterval  600  ;# Check for idle handles every 10 minutes.
 #
 # Following is the mysql connection info that specifies
-# which database to connect to, user name, etc.
+# which database to connect to, username, etc.
 #
 ns_param   database       "mysql"
 ns_param   user           "root"

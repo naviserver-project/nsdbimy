@@ -68,7 +68,7 @@ ns_param   unixdomain      /var/lib/mysql/mysql.sock
 
 ns_section "ns/server/server1/module/pool2"
 ns_param   maxhandles      1
-ns_param   user            "invalid user name"
+ns_param   user            "invalid username"
 ns_param   unixdomain      /var/lib/mysql/mysql.sock
 
 ns_section "ns/server/server1/module/pool3"
