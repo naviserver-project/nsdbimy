@@ -396,9 +396,9 @@ Connected(Dbi_Handle *handle)
  */
 
 static void
-Bind(Ns_DString *ds, CONST char *name, int bindIdx)
+Bind(Tcl_DString *ds, CONST char *name, int bindIdx)
 {
-    Ns_DStringAppend(ds, "?");
+    Tcl_DStringAppend(ds, "?", TCL_INDEX_NONE);
 }
 
 
@@ -783,7 +783,7 @@ Transaction(Dbi_Handle *handle, unsigned int depth,
             Dbi_TransactionCmd cmd, Dbi_Isolation isolation)
 {
     MyHandle   *myHandle = handle->driverData;
-    Ns_DString  ds;
+    Tcl_DString ds;
 
     switch (cmd) {
 
@@ -796,16 +796,16 @@ Transaction(Dbi_Handle *handle, unsigned int depth,
                 return NS_ERROR;
             }
         } else {
-            Ns_DStringInit(&ds);
+            Tcl_DStringInit(&ds);
             Ns_DStringPrintf(&ds, "savepoint s%u", depth);
 
-            if (mysql_query(myHandle->conn, Ns_DStringValue(&ds))) {
+            if (mysql_query(myHandle->conn, ds.string)) {
                 Dbi_SetException(handle, mysql_sqlstate(myHandle->conn),
                                  mysql_error(myHandle->conn));
-                Ns_DStringFree(&ds);
+                Tcl_DStringFree(&ds);
                 return NS_ERROR;
             }
-            Ns_DStringFree(&ds);
+            Tcl_DStringFree(&ds);
         }
         break;
 
@@ -827,15 +827,15 @@ Transaction(Dbi_Handle *handle, unsigned int depth,
                 return NS_ERROR;
             }
         } else {
-            Ns_DStringInit(&ds);
+            Tcl_DStringInit(&ds);
             Ns_DStringPrintf(&ds, "rollback to savepoint s%u", depth);
-            if (mysql_query(myHandle->conn, Ns_DStringValue(&ds))) {
+            if (mysql_query(myHandle->conn, ds.string)) {
                 Dbi_SetException(handle, mysql_sqlstate(myHandle->conn),
                                  mysql_error(myHandle->conn));
-                Ns_DStringFree(&ds);
+                Tcl_DStringFree(&ds);
                 return NS_ERROR;
             }
-            Ns_DStringFree(&ds);
+            Tcl_DStringFree(&ds);
         }
         break;
     }
