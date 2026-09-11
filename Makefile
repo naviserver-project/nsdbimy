@@ -24,7 +24,10 @@
 
 VERSION      = 0.2
 
-NAVISERVER   = /usr/local/ns
+ifndef NAVISERVER
+	NAVISERVER   = /usr/local/ns
+endif
+
 NSD          = $(NAVISERVER)/bin/nsd
 
 MYSQL_CONFIG = mysql_config
